@@ -1,8 +1,12 @@
 [phases.setup]
-nixPkgs = ["nodejs", "ffmpeg"]
+nixPkgs = ["nodejs", "ffmpeg", "python311", "curl"]
 
 [phases.install]
 cmds = [
     "pip install -r requirements.txt",
-    "npm install -g @yt-dlp/ejs"
+    "npm install -g @yt-dlp/ejs",
+    "mkdir -p /app/cookies"
 ]
+
+[start]
+cmd = "gunicorn server:app -b 0.0.0.0:${PORT:-8080} --timeout 300"

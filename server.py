@@ -3,7 +3,9 @@ import re
 import tempfile
 import subprocess
 import sys
-import traceback
+import json
+import time
+import random
 
 # Garantir que yt-dlp está atualizado
 try:
@@ -19,17 +21,42 @@ app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
-COOKIES = os.path.join(os.path.dirname(__file__), "cookies.txt")
+COOKIES_DIR = os.path.join(os.path.dirname(__file__), "cookies")
+COOKIES_FILE = os.path.join(COOKIES_DIR, "cookies.txt")
+
+# Criar diretório de cookies se não existir
+os.makedirs(COOKIES_DIR, exist_ok=True)
 
 def ydl_opts():
-    """Configurações básicas do yt-dlp"""
+    """Configurações do yt-dlp com fallbacks"""
     opts = {
         "quiet": True,
-        "no_warnings": True,
-        "extractor_args": "youtube:player_client=android",
+        "no_warnings": False,
+        # Tentar diferentes clientes para evitar bloqueio
+        "extractor_args": "youtube:player_client=android,ios,web",
+        # User agent aleatório para evitar detecção
+        "user_agent": random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36",
+        ]),
+        # Rate limiting
+        "sleep_interval_requests": random.uniform(1, 3),
+        "sleep_interval": random.uniform(1, 3),
+        "max_sleep_interval": 5,
+        # Tentar usar Node.js se disponível
+        "js_runtimes": {
+            "node": {
+                "path": "node",
+                "flags": []
+            }
+        },
     }
-    if os.path.exists(COOKIES):
-        opts["cookiefile"] = COOKIES
+
+    # Adicionar cookies se existirem
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+
     return opts
 
 def extract_video_id(url_or_id):
@@ -49,7 +76,22 @@ def extract_video_id(url_or_id):
 
 @app.route("/")
 def health():
-    return jsonify({"status": "ok", "service": "VLTX Backend"})
+    return jsonify({
+        "status": "ok",
+        "service": "VLTX Backend",
+        "cookies_available": os.path.exists(COOKIES_FILE)
+    })
+
+@app.route("/api/upload-cookies", methods=["POST"])
+def upload_cookies():
+    """Endpoint para fazer upload de cookies.txt"""
+    if "cookies" not in request.files:
+        return jsonify({"error": "Arquivo cookies.txt não enviado"}), 400
+
+    file = request.files["cookies"]
+    file.save(COOKIES_FILE)
+
+    return jsonify({"message": "Cookies salvos com sucesso!"})
 
 @app.route("/api/info")
 def info():
@@ -64,59 +106,61 @@ def info():
 
         url = f"https://www.youtube.com/watch?v={vid_id}"
 
-        # Tentativa 1: Configuração normal
+        data = None
+        errors = []
+
+        # Tentativa 1: Com todas as configurações
         try:
             with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
                 data = ydl.extract_info(url, download=False)
-                print(f"Tipo de data: {type(data)}")  # Debug
-
-                # Se for string, é um erro
                 if isinstance(data, str):
-                    print(f"Erro retornado como string: {data}")
                     raise Exception(data)
+        except Exception as e:
+            errors.append(f"Tentativa 1: {str(e)}")
 
-        except Exception as e1:
-            print(f"Tentativa 1 falhou: {str(e1)}")
             # Tentativa 2: Configuração mínima
             try:
-                opts_min = {"quiet": True, "no_warnings": True}
+                opts_min = {
+                    "quiet": True,
+                    "skip_download": True,
+                    "extractor_args": "youtube:player_client=android",
+                    "user_agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36",
+                }
                 with yt_dlp.YoutubeDL(opts_min) as ydl:
                     data = ydl.extract_info(url, download=False)
             except Exception as e2:
-                print(f"Tentativa 2 falhou: {str(e2)}")
-                # Tentativa 3: Usar yt-dlp via linha de comando
+                errors.append(f"Tentativa 2: {str(e2)}")
+
+                # Tentativa 3: Via linha de comando
                 try:
-                    import json
-                    result = subprocess.run(
-                        ["yt-dlp", "-j", url],
-                        capture_output=True,
-                        text=True,
-                        timeout=30
-                    )
+                    cmd = ["yt-dlp", "-j", "--extractor-args", "youtube:player_client=android", url]
+                    if os.path.exists(COOKIES_FILE):
+                        cmd.extend(["--cookies", COOKIES_FILE])
+
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                     if result.returncode == 0:
                         data = json.loads(result.stdout)
                     else:
-                        return jsonify({"error": f"Falha ao extrair: {result.stderr}"}), 500
+                        errors.append(f"Tentativa 3: {result.stderr}")
                 except Exception as e3:
-                    return jsonify({"error": f"Todas as tentativas falharam: {str(e3)}"}), 500
+                    errors.append(f"Tentativa 3: {str(e3)}")
 
-        # Verificar se data é um dicionário
-        if not isinstance(data, dict):
-            return jsonify({"error": f"Tipo de dados inválido: {type(data)}"}), 500
+        if not data or not isinstance(data, dict):
+            error_msg = " | ".join(errors)
+            return jsonify({
+                "error": "Não foi possível extrair informações do vídeo",
+                "details": error_msg,
+                "hint": "O YouTube pode estar bloqueando o IP. Considere fazer upload de cookies.txt"
+            }), 500
 
-        # Extrair informações com segurança
-        title = str(data.get("title", "Sem título") or "Sem título")
-        channel = str(data.get("uploader", "Desconhecido") or "Desconhecido")
-        duration_raw = int(data.get("duration", 0) or 0)
-        views_raw = int(data.get("view_count", 0) or 0)
+        # Extrair informações
+        title = str(data.get("title") or "Sem título")
+        channel = str(data.get("uploader") or data.get("channel") or "Desconhecido")
+        duration_raw = int(data.get("duration") or 0)
+        views_raw = int(data.get("view_count") or 0)
 
         # Formatar duração
-        if duration_raw > 0:
-            mins = duration_raw // 60
-            secs = duration_raw % 60
-            duration = f"{mins}:{secs:02d}"
-        else:
-            duration = ""
+        duration = f"{duration_raw // 60}:{duration_raw % 60:02d}" if duration_raw > 0 else ""
 
         # Formatar visualizações
         if views_raw >= 1000000:
@@ -126,8 +170,7 @@ def info():
         else:
             views = f"{views_raw} visualizacoes"
 
-        # Thumbnail
-        thumbnail = str(data.get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"))
+        thumbnail = str(data.get("thumbnail") or f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg")
 
         return jsonify({
             "title": title,
@@ -138,7 +181,6 @@ def info():
         })
 
     except Exception as e:
-        print(f"Erro final: {traceback.format_exc()}")  # Debug completo
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/download")
@@ -157,7 +199,6 @@ def download():
 
         url = f"https://www.youtube.com/watch?v={vid_id}"
 
-        # Configurar opções de download
         opts = ydl_opts()
         opts["outtmpl"] = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
 
@@ -177,45 +218,29 @@ def download():
             opts["format"] = f"{quality_map.get(quality, 'best')}/best"
             opts["merge_output_format"] = "mp4"
 
-        # Download com múltiplas tentativas
+        # Download com retry
         data = None
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                data = ydl.extract_info(url, download=True)
-        except Exception as e1:
-            print(f"Tentativa 1 falhou: {str(e1)}")
-            # Tentativa com configuração mínima
+        for attempt in range(3):
             try:
-                opts_min = {
-                    "quiet": True,
-                    "format": "bestaudio/best" if fmt == "mp3" else "best",
-                    "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
-                }
-                if fmt == "mp3":
-                    opts_min["postprocessors"] = [{
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }]
-                with yt_dlp.YoutubeDL(opts_min) as ydl:
+                with yt_dlp.YoutubeDL(opts) as ydl:
                     data = ydl.extract_info(url, download=True)
-            except Exception as e2:
-                return jsonify({"error": f"Falha no download: {str(e2)}"}), 500
+                break
+            except Exception as e:
+                if attempt == 2:  # Última tentativa
+                    raise e
+                time.sleep(random.uniform(2, 5))  # Esperar antes de tentar novamente
 
-        # Verificar dados
         if not isinstance(data, dict):
-            return jsonify({"error": "Dados de download inválidos"}), 500
+            return jsonify({"error": "Falha no download"}), 500
 
-        # Nome do arquivo
-        title = str(data.get("title", vid_id) or vid_id)
+        title = str(data.get("title") or vid_id)
         safe_title = re.sub(r'[\\/*?:"<>|]', "-", title)[:60].strip()
 
-        # Extensão
         ext = "mp3" if fmt == "mp3" else "mp4"
         filename = safe_title + "." + ext
         filepath = os.path.join(DOWNLOAD_DIR, filename)
 
-        # Se não encontrar, procura o arquivo mais recente
+        # Procurar arquivo
         if not os.path.exists(filepath):
             all_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(ext)]
             if not all_files and ext == "mp4":
@@ -232,26 +257,23 @@ def download():
             filepath = os.path.join(DOWNLOAD_DIR, all_files[0])
             filename = all_files[0]
 
-        # MIME type
         mime_types = {
             "mp3": "audio/mpeg",
             "mp4": "video/mp4",
             "mkv": "video/x-matroska",
             "webm": "video/webm"
         }
-        mimetype = mime_types.get(ext, "application/octet-stream")
 
         return send_file(
             filepath,
             as_attachment=True,
             download_name=filename,
-            mimetype=mimetype
+            mimetype=mime_types.get(ext, "application/octet-stream")
         )
 
     except Exception as e:
-        print(f"Erro final: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=port)
