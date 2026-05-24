@@ -1,11 +1,12 @@
 [phases.setup]
-nixPkgs = ["nodejs", "ffmpeg", "python311", "curl"]
+nixPkgs = ["nodejs", "ffmpeg", "python311"]
 
 [phases.install]
 cmds = [
-    "pip install -r requirements.txt",
-    "npm install -g @yt-dlp/ejs",
-    "mkdir -p /app/cookies"
+    "pip uninstall -y yt-dlp",
+    "pip install yt-dlp==2024.12.13",
+    "pip install flask flask-cors gunicorn",
+    "npm install -g @yt-dlp/ejs"
 ]
 
 [start]
