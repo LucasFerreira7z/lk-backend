@@ -75,13 +75,16 @@ def download():
     video_id = request.args.get("v", "").strip()
     fmt      = request.args.get("fmt", "mp3").strip().lower()
     quality  = request.args.get("q", "128").strip()
+
     if not video_id:
         return jsonify({"error": "Parametro v obrigatorio"}), 400
+
     try:
         vid_id = extract_video_id(video_id)
         url    = f"https://www.youtube.com/watch?v={vid_id}"
 
         if fmt == "mp3":
+            # Qualidade de áudio
             audio_quality = quality if quality in ("128", "192", "320") else "192"
             opts = {
                 **ydl_base_opts(),
@@ -93,48 +96,50 @@ def download():
                     "preferredquality": audio_quality,
                 }],
             }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info  = ydl.extract_info(url, download=True)
-                title = safe_name(info.get("title", vid_id))
-            filepath = os.path.join(DOWNLOAD_DIR, title + ".mp3")
-            if not os.path.exists(filepath):
-                files = sorted(
-                    [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".mp3")],
-                    key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
-                    reverse=True,
-                )
-                if not files:
-                    return jsonify({"error": "Arquivo nao encontrado"}), 500
-                filepath = os.path.join(DOWNLOAD_DIR, files[0])
-            return send_file(filepath, as_attachment=True,
-                             download_name=title + ".mp3", mimetype="audio/mpeg")
         else:
-            fmt_map = {
-                "360":  "18",
-                "720":  "22",
-                "1080": "bestvideo[ext=mp4]+bestaudio/best",
+            # Formatos de vídeo com fallback inteligente
+            quality_formats = {
+                "360":  "best[height<=360][ext=mp4]/best[height<=360]/best",
+                "720":  "best[height<=720][ext=mp4]/best[height<=720]/best",
+                "1080": "best[height<=1080][ext=mp4]/best[height<=1080]/best",
             }
+            format_str = quality_formats.get(quality, "best[ext=mp4]/best")
+
             opts = {
                 **ydl_base_opts(),
-                "format": fmt_map.get(quality, "22"),
+                "format": format_str,
                 "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
                 "merge_output_format": "mp4",
             }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info  = ydl.extract_info(url, download=True)
-                title = safe_name(info.get("title", vid_id))
-            filepath = os.path.join(DOWNLOAD_DIR, title + ".mp4")
-            if not os.path.exists(filepath):
-                files = sorted(
-                    [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".mp4")],
-                    key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
-                    reverse=True,
-                )
-                if not files:
-                    return jsonify({"error": "Arquivo nao encontrado"}), 500
-                filepath = os.path.join(DOWNLOAD_DIR, files[0])
-            return send_file(filepath, as_attachment=True,
-                             download_name=title + ".mp4", mimetype="video/mp4")
+
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info  = ydl.extract_info(url, download=True)
+            title = safe_name(info.get("title", vid_id))
+
+        # Determinar extensão e caminho do arquivo
+        ext = "mp3" if fmt == "mp3" else "mp4"
+        filepath = os.path.join(DOWNLOAD_DIR, title + f".{ext}")
+
+        # Se o arquivo não for encontrado com o nome esperado, procura o mais recente
+        if not os.path.exists(filepath):
+            files = sorted(
+                [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(f".{ext}")],
+                key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
+                reverse=True,
+            )
+            if not files:
+                return jsonify({"error": "Arquivo nao encontrado"}), 500
+            filepath = os.path.join(DOWNLOAD_DIR, files[0])
+
+        # Enviar arquivo
+        mimetype = "audio/mpeg" if ext == "mp3" else "video/mp4"
+        return send_file(
+            filepath,
+            as_attachment=True,
+            download_name=title + f".{ext}",
+            mimetype=mimetype
+        )
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
