@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["nodejs", "ffmpeg"]
+
+[phases.install]
+cmds = [
+    "pip install -r requirements.txt",
+    "npm install -g @yt-dlp/ejs"
+]
