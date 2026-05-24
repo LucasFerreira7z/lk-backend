@@ -27,8 +27,13 @@ def ydl_base_opts():
     opts = {
         "quiet": True,
         "no_warnings": False,
-        # Usa Node.js para resolver desafios JavaScript
-        "js_runtimes": "node",
+        # Formato correto: dicionário com configuração do runtime
+        "js_runtimes": {
+            "node": {
+                "path": "node",
+                "flags": []
+            }
+        },
         # Extratores alternativos para contornar restrições
         "extractor_args": "youtube:player_client=android,web,ios",
         # Ignora erros de formato
