@@ -3,6 +3,7 @@ import re
 import tempfile
 import subprocess
 import sys
+import traceback
 
 # Garantir que yt-dlp está atualizado
 try:
@@ -63,23 +64,59 @@ def info():
 
         url = f"https://www.youtube.com/watch?v={vid_id}"
 
-        with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
-            data = ydl.extract_info(url, download=False)
+        # Tentativa 1: Configuração normal
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
+                data = ydl.extract_info(url, download=False)
+                print(f"Tipo de data: {type(data)}")  # Debug
 
-        # Verificar se data é válido
-        if not data or not isinstance(data, dict):
-            return jsonify({"error": "Falha ao extrair dados"}), 500
+                # Se for string, é um erro
+                if isinstance(data, str):
+                    print(f"Erro retornado como string: {data}")
+                    raise Exception(data)
+
+        except Exception as e1:
+            print(f"Tentativa 1 falhou: {str(e1)}")
+            # Tentativa 2: Configuração mínima
+            try:
+                opts_min = {"quiet": True, "no_warnings": True}
+                with yt_dlp.YoutubeDL(opts_min) as ydl:
+                    data = ydl.extract_info(url, download=False)
+            except Exception as e2:
+                print(f"Tentativa 2 falhou: {str(e2)}")
+                # Tentativa 3: Usar yt-dlp via linha de comando
+                try:
+                    import json
+                    result = subprocess.run(
+                        ["yt-dlp", "-j", url],
+                        capture_output=True,
+                        text=True,
+                        timeout=30
+                    )
+                    if result.returncode == 0:
+                        data = json.loads(result.stdout)
+                    else:
+                        return jsonify({"error": f"Falha ao extrair: {result.stderr}"}), 500
+                except Exception as e3:
+                    return jsonify({"error": f"Todas as tentativas falharam: {str(e3)}"}), 500
+
+        # Verificar se data é um dicionário
+        if not isinstance(data, dict):
+            return jsonify({"error": f"Tipo de dados inválido: {type(data)}"}), 500
 
         # Extrair informações com segurança
-        title = data.get("title", "Sem título") or "Sem título"
-        channel = data.get("uploader", "Desconhecido") or "Desconhecido"
-        duration_raw = data.get("duration", 0) or 0
-        views_raw = data.get("view_count", 0) or 0
+        title = str(data.get("title", "Sem título") or "Sem título")
+        channel = str(data.get("uploader", "Desconhecido") or "Desconhecido")
+        duration_raw = int(data.get("duration", 0) or 0)
+        views_raw = int(data.get("view_count", 0) or 0)
 
         # Formatar duração
-        mins = duration_raw // 60
-        secs = duration_raw % 60
-        duration = f"{mins}:{secs:02d}" if duration_raw > 0 else ""
+        if duration_raw > 0:
+            mins = duration_raw // 60
+            secs = duration_raw % 60
+            duration = f"{mins}:{secs:02d}"
+        else:
+            duration = ""
 
         # Formatar visualizações
         if views_raw >= 1000000:
@@ -90,7 +127,7 @@ def info():
             views = f"{views_raw} visualizacoes"
 
         # Thumbnail
-        thumbnail = data.get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg")
+        thumbnail = str(data.get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"))
 
         return jsonify({
             "title": title,
@@ -101,6 +138,7 @@ def info():
         })
 
     except Exception as e:
+        print(f"Erro final: {traceback.format_exc()}")  # Debug completo
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/download")
@@ -131,7 +169,6 @@ def download():
                 "preferredquality": quality if quality in ("128", "192", "320") else "192",
             }]
         else:
-            # Formato de vídeo com fallback
             quality_map = {
                 "360": "best[height<=360]",
                 "720": "best[height<=720]",
@@ -140,15 +177,37 @@ def download():
             opts["format"] = f"{quality_map.get(quality, 'best')}/best"
             opts["merge_output_format"] = "mp4"
 
-        # Download
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            data = ydl.extract_info(url, download=True)
+        # Download com múltiplas tentativas
+        data = None
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                data = ydl.extract_info(url, download=True)
+        except Exception as e1:
+            print(f"Tentativa 1 falhou: {str(e1)}")
+            # Tentativa com configuração mínima
+            try:
+                opts_min = {
+                    "quiet": True,
+                    "format": "bestaudio/best" if fmt == "mp3" else "best",
+                    "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+                }
+                if fmt == "mp3":
+                    opts_min["postprocessors"] = [{
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": "192",
+                    }]
+                with yt_dlp.YoutubeDL(opts_min) as ydl:
+                    data = ydl.extract_info(url, download=True)
+            except Exception as e2:
+                return jsonify({"error": f"Falha no download: {str(e2)}"}), 500
 
-        if not data or not isinstance(data, dict):
-            return jsonify({"error": "Falha no download"}), 500
+        # Verificar dados
+        if not isinstance(data, dict):
+            return jsonify({"error": "Dados de download inválidos"}), 500
 
         # Nome do arquivo
-        title = data.get("title", vid_id) or vid_id
+        title = str(data.get("title", vid_id) or vid_id)
         safe_title = re.sub(r'[\\/*?:"<>|]', "-", title)[:60].strip()
 
         # Extensão
@@ -160,7 +219,6 @@ def download():
         if not os.path.exists(filepath):
             all_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(ext)]
             if not all_files and ext == "mp4":
-                # Tenta outros formatos
                 for alt_ext in ["mkv", "webm"]:
                     all_files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(alt_ext)]
                     if all_files:
@@ -170,7 +228,6 @@ def download():
             if not all_files:
                 return jsonify({"error": "Arquivo não encontrado"}), 500
 
-            # Pega o arquivo mais recente
             all_files.sort(key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)), reverse=True)
             filepath = os.path.join(DOWNLOAD_DIR, all_files[0])
             filename = all_files[0]
@@ -192,8 +249,9 @@ def download():
         )
 
     except Exception as e:
+        print(f"Erro final: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, debug=True)
