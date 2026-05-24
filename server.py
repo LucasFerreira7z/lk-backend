@@ -60,6 +60,8 @@ def extract_video_id(url_or_id):
 
 def safe_name(title):
     """Remove caracteres inválidos para nome de arquivo"""
+    if not title:
+        return "video"
     return re.sub(r'[\\/*?:"<>|]', "-", title)[:60].strip()
 
 @app.route("/")
@@ -68,7 +70,7 @@ def health():
     return jsonify({
         "status": "ok",
         "service": "VLTX Backend",
-        "version": "2.0",
+        "version": "2.1",
         "features": ["youtube", "ejs-enabled"]
     })
 
@@ -86,7 +88,20 @@ def info():
         opts = {**ydl_base_opts(), "skip_download": True}
 
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            try:
+                info = ydl.extract_info(url, download=False)
+            except Exception as e:
+                # Fallback: tenta sem js_runtimes
+                opts_simple = {
+                    "quiet": True,
+                    "skip_download": True,
+                    "extractor_args": "youtube:player_client=android",
+                }
+                with yt_dlp.YoutubeDL(opts_simple) as ydl2:
+                    info = ydl2.extract_info(url, download=False)
+
+        if not info:
+            return jsonify({"error": "Não foi possível obter informações do vídeo"}), 500
 
         secs = info.get("duration", 0) or 0
         duration = f"{secs // 60}:{secs % 60:02d}" if secs else ""
@@ -100,14 +115,14 @@ def info():
             views_str = f"{views} visualizacoes"
 
         return jsonify({
-            "title": info.get("title", ""),
-            "channel": info.get("uploader", ""),
+            "title": info.get("title", "Sem título"),
+            "channel": info.get("uploader", "Desconhecido"),
             "views": views_str,
             "duration": duration,
             "thumbUrl": info.get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"),
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Erro ao obter info: {str(e)}"}), 500
 
 @app.route("/api/download")
 def download():
@@ -123,8 +138,8 @@ def download():
         vid_id = extract_video_id(video_id)
         url = f"https://www.youtube.com/watch?v={vid_id}"
 
+        # Configuração base para download
         if fmt == "mp3":
-            # Download de áudio MP3
             audio_quality = quality if quality in ("128", "192", "320") else "192"
             opts = {
                 **ydl_base_opts(),
@@ -137,7 +152,6 @@ def download():
                 }],
             }
         else:
-            # Download de vídeo com fallback inteligente
             quality_formats = {
                 "360": "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best",
                 "720": "best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best",
@@ -152,21 +166,40 @@ def download():
                 "merge_output_format": "mp4",
             }
 
-        # Tentativa de download
+        # Tentativa de download com fallback
+        info = None
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                title = safe_name(info.get("title", vid_id))
-        except Exception as download_error:
-            # Fallback: tenta formato mais simples
-            if fmt != "mp3":
-                print(f"Tentando formato alternativo para {vid_id}...")
-                opts["format"] = "best"
-                with yt_dlp.YoutubeDL(opts) as ydl:
+        except Exception as e:
+            print(f"Erro na primeira tentativa: {str(e)}")
+
+            # Fallback: tenta com configurações mais simples
+            opts_simple = {
+                "quiet": True,
+                "format": "bestaudio/best" if fmt == "mp3" else "best",
+                "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+                "ignoreerrors": True,
+                "extractor_args": "youtube:player_client=android",
+            }
+
+            if fmt == "mp3":
+                opts_simple["postprocessors"] = [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }]
+
+            try:
+                with yt_dlp.YoutubeDL(opts_simple) as ydl:
                     info = ydl.extract_info(url, download=True)
-                    title = safe_name(info.get("title", vid_id))
-            else:
-                raise download_error
+            except Exception as e2:
+                return jsonify({"error": f"Falha no download: {str(e2)}"}), 500
+
+        if not info:
+            return jsonify({"error": "Não foi possível processar o vídeo"}), 500
+
+        title = safe_name(info.get("title", vid_id) if info else vid_id)
 
         # Localizar arquivo baixado
         ext = "mp3" if fmt == "mp3" else "mp4"
@@ -194,10 +227,14 @@ def download():
                         break
 
             if not files:
-                return jsonify({"error": "Arquivo nao encontrado"}), 500
+                return jsonify({"error": "Arquivo não encontrado após download"}), 500
 
             if not os.path.exists(filepath):
                 filepath = os.path.join(DOWNLOAD_DIR, files[0])
+
+        # Verificar se arquivo existe e tem tamanho
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            return jsonify({"error": "Arquivo corrompido ou vazio"}), 500
 
         # Enviar arquivo
         mimetypes = {
@@ -216,7 +253,7 @@ def download():
         )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Erro no download: {str(e)}"}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
