@@ -65,11 +65,15 @@ def safe_name(title):
 @app.route("/debug")
 def debug():
     exists = os.path.exists(COOKIES_FILE)
+    content_preview = ""
+    if exists:
+        with open(COOKIES_FILE, "r", errors="replace") as f:
+            content_preview = f.read(200)
     return jsonify({
         "cookies_exists": exists,
         "cookies_size":   os.path.getsize(COOKIES_FILE) if exists else 0,
+        "cookies_preview": content_preview,
         "cookies_b64_set": bool(os.environ.get("COOKIES_B64")),
-        "po_token_set":   bool(os.environ.get("PO_TOKEN")),
         "files": os.listdir(os.getcwd()),
     })
 
@@ -154,9 +158,9 @@ def download():
                              mimetype="audio/mpeg")
         else:
             fmt_map = {
-                "360":  "18",                                    # 360p já muxado
-                "720":  "22",                                    # 720p já muxado
-                "1080": "137+140/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
+                "360":  "18/bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best",
+                "720":  "22/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
+                "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
             }
             opts = {
                 **ydl_base_opts(),
