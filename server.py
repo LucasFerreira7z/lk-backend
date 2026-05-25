@@ -158,15 +158,14 @@ def download():
                              mimetype="audio/mpeg")
         else:
             fmt_map = {
-                "360":  "18/bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best",
-                "720":  "22/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
-                "1080": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
+                "360":  "best[height<=360]/best",
+                "720":  "best[height<=720]/best",
+                "1080": "best[height<=1080]/best",
             }
             opts = {
                 **ydl_base_opts(),
-                "format": fmt_map.get(quality, "22"),
+                "format": fmt_map.get(quality, "best"),
                 "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
-                "merge_output_format": "mp4",
             }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 data  = ydl.extract_info(url, download=True)
@@ -174,15 +173,23 @@ def download():
                 title = safe_name(data.get("title", vid_id))
 
             filepath = os.path.join(DOWNLOAD_DIR, vid + ".mp4")
+            video_exts = (".mp4", ".mkv", ".webm", ".avi", ".mov")
             if not os.path.exists(filepath):
-                files = sorted(
-                    [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".mp4")],
-                    key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
-                    reverse=True,
-                )
-                if not files:
-                    return jsonify({"error": "Arquivo mp4 nao encontrado"}), 500
-                filepath = os.path.join(DOWNLOAD_DIR, files[0])
+                for ext in video_exts:
+                    c = os.path.join(DOWNLOAD_DIR, vid + ext)
+                    if os.path.exists(c):
+                        filepath = c
+                        break
+                else:
+                    files = sorted(
+                        [f for f in os.listdir(DOWNLOAD_DIR)
+                         if any(f.endswith(e) for e in video_exts)],
+                        key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
+                        reverse=True,
+                    )
+                    if not files:
+                        return jsonify({"error": "Arquivo de video nao encontrado"}), 500
+                    filepath = os.path.join(DOWNLOAD_DIR, files[0])
 
             return send_file(filepath, as_attachment=True,
                              download_name=title + ".mp4",
