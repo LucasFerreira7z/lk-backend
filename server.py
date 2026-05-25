@@ -17,7 +17,7 @@ def ydl_base_opts():
         "quiet": True,
         "no_warnings": True,
         "cookiefile": COOKIES,
-        # Usa o visitor_data + po_token se definidos como env vars
+        "ffmpeg_location": "/usr/bin/ffmpeg",
     }
 
     visitor_data = os.environ.get("VISITOR_DATA", "")
@@ -116,7 +116,7 @@ def download():
             audio_quality = quality if quality in ("128", "192", "320") else "192"
             opts = {
                 **ydl_base_opts(),
-                "format": "bestaudio/best",
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",
@@ -145,9 +145,9 @@ def download():
                              mimetype="audio/mpeg")
         else:
             fmt_map = {
-                "360":  "18",
-                "720":  "22",
-                "1080": "bestvideo[ext=mp4]+bestaudio/best",
+                "360":  "18",                                    # 360p já muxado
+                "720":  "22",                                    # 720p já muxado
+                "1080": "137+140/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
             }
             opts = {
                 **ydl_base_opts(),
