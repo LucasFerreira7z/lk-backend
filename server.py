@@ -1,46 +1,15 @@
 import os
 import re
 import tempfile
-import yt_dlp
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
+from pytubefix import YouTube
+from pytubefix.cli import on_progress
 
 app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
-COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
-
-# Alternativa: env var com conteúdo base64 para preservar quebras de linha
-cookies_b64 = os.environ.get("COOKIES_B64", "")
-if cookies_b64:
-    import base64
-    COOKIES_FILE = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
-    with open(COOKIES_FILE, "wb") as f:
-        f.write(base64.b64decode(cookies_b64))
-
-
-def ydl_base_opts():
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "ffmpeg_location": "/usr/bin/ffmpeg",
-    }
-    if os.path.exists(COOKIES_FILE):
-        opts["cookiefile"] = COOKIES_FILE
-
-    visitor_data = os.environ.get("VISITOR_DATA", "")
-    po_token     = os.environ.get("PO_TOKEN", "")
-
-    if visitor_data and po_token:
-        opts["extractor_args"] = {
-            "youtube": {
-                "visitor_data": [visitor_data],
-                "po_token":     [f"web+{po_token}"],
-            }
-        }
-
-    return opts
 
 
 def extract_video_id(url_or_id):
@@ -62,47 +31,10 @@ def safe_name(title):
     return re.sub(r'[\\/*?:"<>|]', "-", title)[:60].strip()
 
 
-@app.route("/debug")
-def debug():
-    exists = os.path.exists(COOKIES_FILE)
-    content_preview = ""
-    if exists:
-        with open(COOKIES_FILE, "r", errors="replace") as f:
-            content_preview = f.read(200)
-    return jsonify({
-        "cookies_exists": exists,
-        "cookies_size":   os.path.getsize(COOKIES_FILE) if exists else 0,
-        "cookies_preview": content_preview,
-        "cookies_b64_set": bool(os.environ.get("COOKIES_B64")),
-        "files": os.listdir(os.getcwd()),
-    })
+def make_yt(vid_id):
+    url = f"https://www.youtube.com/watch?v={vid_id}"
+    return YouTube(url, on_progress_callback=on_progress, use_oauth=False, allow_oauth_cache=False)
 
-
-@app.route("/api/formats")
-def formats():
-    video_id = request.args.get("v", "").strip()
-    if not video_id:
-        return jsonify({"error": "Parametro v obrigatorio"}), 400
-    try:
-        vid_id = extract_video_id(video_id)
-        url = f"https://www.youtube.com/watch?v={vid_id}"
-        opts = {**ydl_base_opts(), "skip_download": True, "listformats": False}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            data = ydl.extract_info(url, download=False)
-        fmts = [
-            {
-                "id":      f.get("format_id"),
-                "ext":     f.get("ext"),
-                "height":  f.get("height"),
-                "acodec":  f.get("acodec"),
-                "vcodec":  f.get("vcodec"),
-                "note":    f.get("format_note"),
-            }
-            for f in (data.get("formats") or [])
-        ]
-        return jsonify({"formats": fmts, "total": len(fmts)})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/")
 def health():
@@ -116,25 +48,25 @@ def info():
         return jsonify({"error": "Parametro v obrigatorio"}), 400
     try:
         vid_id = extract_video_id(video_id)
-        url = f"https://www.youtube.com/watch?v={vid_id}"
-        opts = {**ydl_base_opts(), "skip_download": True}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            data = ydl.extract_info(url, download=False)
-        secs  = data.get("duration", 0) or 0
-        views = data.get("view_count", 0) or 0
+        yt = make_yt(vid_id)
+
+        secs = yt.length or 0
+        duration = f"{secs // 60}:{secs % 60:02d}" if secs else ""
+
+        views = yt.views or 0
         if views >= 1_000_000:
             views_str = f"{views/1_000_000:.1f}M visualizacoes"
         elif views >= 1_000:
             views_str = f"{views/1_000:.0f}K visualizacoes"
         else:
             views_str = f"{views} visualizacoes"
+
         return jsonify({
-            "title":    data.get("title", ""),
-            "channel":  data.get("uploader", ""),
+            "title":    yt.title,
+            "channel":  yt.author,
             "views":    views_str,
-            "duration": f"{secs//60}:{secs%60:02d}" if secs else "",
-            "thumbUrl": data.get("thumbnail",
-                        f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"),
+            "duration": duration,
+            "thumbUrl": yt.thumbnail_url,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -145,81 +77,74 @@ def download():
     video_id = request.args.get("v", "").strip()
     fmt      = request.args.get("fmt", "mp3").strip().lower()
     quality  = request.args.get("q", "128").strip()
+
     if not video_id:
         return jsonify({"error": "Parametro v obrigatorio"}), 400
+
     try:
         vid_id = extract_video_id(video_id)
-        url    = f"https://www.youtube.com/watch?v={vid_id}"
+        yt     = make_yt(vid_id)
+        title  = safe_name(yt.title)
 
         if fmt == "mp3":
-            audio_quality = quality if quality in ("128", "192", "320") else "192"
-            opts = {
-                **ydl_base_opts(),
-                "format": "bestaudio[ext=m4a]/bestaudio/best",
-                "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": audio_quality,
-                }],
-            }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                data  = ydl.extract_info(url, download=True)
-                vid   = data.get("id", vid_id)
-                title = safe_name(data.get("title", vid_id))
+            # Pega só o áudio
+            stream = yt.streams.filter(only_audio=True).order_by("abr").last()
+            if not stream:
+                return jsonify({"error": "Nenhuma stream de audio encontrada"}), 404
 
-            filepath = os.path.join(DOWNLOAD_DIR, vid + ".mp3")
-            if not os.path.exists(filepath):
-                files = sorted(
-                    [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".mp3")],
-                    key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
-                    reverse=True,
+            filepath = stream.download(output_path=DOWNLOAD_DIR, filename=title + ".mp4")
+
+            # Renomeia para .mp3
+            mp3_path = os.path.join(DOWNLOAD_DIR, title + ".mp3")
+            if os.path.exists(mp3_path):
+                os.remove(mp3_path)
+            os.rename(filepath, mp3_path)
+
+            return send_file(
+                mp3_path,
+                as_attachment=True,
+                download_name=title + ".mp3",
+                mimetype="audio/mpeg",
+            )
+
+        else:  # mp4
+            height_map = {"360": 360, "720": 720, "1080": 1080}
+            max_height = height_map.get(quality, 720)
+
+            # Tenta pegar stream progressivo (vídeo + áudio juntos)
+            stream = (
+                yt.streams
+                  .filter(progressive=True, file_extension="mp4")
+                  .filter(lambda s: (s.resolution or "0p").replace("p","").isdigit() and
+                          int((s.resolution or "0p").replace("p","")) <= max_height)
+                  .order_by("resolution")
+                  .last()
+            )
+
+            # Fallback: qualquer progressivo mp4
+            if not stream:
+                stream = (
+                    yt.streams
+                      .filter(progressive=True, file_extension="mp4")
+                      .order_by("resolution")
+                      .last()
                 )
-                if not files:
-                    return jsonify({"error": "Arquivo mp3 nao encontrado"}), 500
-                filepath = os.path.join(DOWNLOAD_DIR, files[0])
 
-            return send_file(filepath, as_attachment=True,
-                             download_name=title + ".mp3",
-                             mimetype="audio/mpeg")
-        else:
-            fmt_map = {
-                "360":  "best[height<=360]/best",
-                "720":  "best[height<=720]/best",
-                "1080": "best[height<=1080]/best",
-            }
-            opts = {
-                **ydl_base_opts(),
-                "format": fmt_map.get(quality, "best"),
-                "outtmpl": os.path.join(DOWNLOAD_DIR, "%(id)s.%(ext)s"),
-            }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                data  = ydl.extract_info(url, download=True)
-                vid   = data.get("id", vid_id)
-                title = safe_name(data.get("title", vid_id))
+            # Fallback final: qualquer stream
+            if not stream:
+                stream = yt.streams.get_highest_resolution()
 
-            filepath = os.path.join(DOWNLOAD_DIR, vid + ".mp4")
-            video_exts = (".mp4", ".mkv", ".webm", ".avi", ".mov")
-            if not os.path.exists(filepath):
-                for ext in video_exts:
-                    c = os.path.join(DOWNLOAD_DIR, vid + ext)
-                    if os.path.exists(c):
-                        filepath = c
-                        break
-                else:
-                    files = sorted(
-                        [f for f in os.listdir(DOWNLOAD_DIR)
-                         if any(f.endswith(e) for e in video_exts)],
-                        key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
-                        reverse=True,
-                    )
-                    if not files:
-                        return jsonify({"error": "Arquivo de video nao encontrado"}), 500
-                    filepath = os.path.join(DOWNLOAD_DIR, files[0])
+            if not stream:
+                return jsonify({"error": "Nenhuma stream de video encontrada"}), 404
 
-            return send_file(filepath, as_attachment=True,
-                             download_name=title + ".mp4",
-                             mimetype="video/mp4")
+            filepath = stream.download(output_path=DOWNLOAD_DIR, filename=title + ".mp4")
+
+            return send_file(
+                filepath,
+                as_attachment=True,
+                download_name=title + ".mp4",
+                mimetype="video/mp4",
+            )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
