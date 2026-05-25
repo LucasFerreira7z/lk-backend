@@ -78,6 +78,32 @@ def debug():
     })
 
 
+@app.route("/api/formats")
+def formats():
+    video_id = request.args.get("v", "").strip()
+    if not video_id:
+        return jsonify({"error": "Parametro v obrigatorio"}), 400
+    try:
+        vid_id = extract_video_id(video_id)
+        url = f"https://www.youtube.com/watch?v={vid_id}"
+        opts = {**ydl_base_opts(), "skip_download": True, "listformats": False}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            data = ydl.extract_info(url, download=False)
+        fmts = [
+            {
+                "id":      f.get("format_id"),
+                "ext":     f.get("ext"),
+                "height":  f.get("height"),
+                "acodec":  f.get("acodec"),
+                "vcodec":  f.get("vcodec"),
+                "note":    f.get("format_note"),
+            }
+            for f in (data.get("formats") or [])
+        ]
+        return jsonify({"formats": fmts, "total": len(fmts)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/")
 def health():
     return jsonify({"status": "ok", "service": "VLTX Backend"})
