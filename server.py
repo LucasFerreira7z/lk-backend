@@ -9,7 +9,15 @@ app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
-COOKIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+COOKIES = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+
+# Escreve cookies do env var em arquivo temporário
+cookies_content = os.environ.get("COOKIES_CONTENT", "")
+if cookies_content:
+    with open(COOKIES, "w") as f:
+        f.write(cookies_content)
+elif os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")):
+    COOKIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
 
 
 def ydl_base_opts():
