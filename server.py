@@ -14,7 +14,11 @@ DOWNLOAD_DIR = tempfile.mkdtemp()
 COOKIES = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
 def ydl_base_opts():
-    opts = {"quiet": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_args": {"youtube": {"skip": ["hls", "dash"]}},
+    }
     if os.path.exists(COOKIES):
         opts["cookiefile"] = COOKIES
     return opts
