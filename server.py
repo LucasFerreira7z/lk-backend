@@ -9,24 +9,25 @@ app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
-COOKIES = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
 
-# Escreve cookies do env var em arquivo temporário
-cookies_content = os.environ.get("COOKIES_CONTENT", "")
-if cookies_content:
-    with open(COOKIES, "w") as f:
-        f.write(cookies_content)
-elif os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")):
-    COOKIES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+# Alternativa: env var com conteúdo base64 para preservar quebras de linha
+cookies_b64 = os.environ.get("COOKIES_B64", "")
+if cookies_b64:
+    import base64
+    COOKIES_FILE = os.path.join(tempfile.gettempdir(), "yt_cookies.txt")
+    with open(COOKIES_FILE, "wb") as f:
+        f.write(base64.b64decode(cookies_b64))
 
 
 def ydl_base_opts():
     opts = {
         "quiet": True,
         "no_warnings": True,
-        "cookiefile": COOKIES,
         "ffmpeg_location": "/usr/bin/ffmpeg",
     }
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
 
     visitor_data = os.environ.get("VISITOR_DATA", "")
     po_token     = os.environ.get("PO_TOKEN", "")
@@ -63,12 +64,12 @@ def safe_name(title):
 
 @app.route("/debug")
 def debug():
-    exists = os.path.exists(COOKIES)
+    exists = os.path.exists(COOKIES_FILE)
     return jsonify({
         "cookies_exists": exists,
-        "cookies_size":   os.path.getsize(COOKIES) if exists else 0,
+        "cookies_size":   os.path.getsize(COOKIES_FILE) if exists else 0,
+        "cookies_b64_set": bool(os.environ.get("COOKIES_B64")),
         "po_token_set":   bool(os.environ.get("PO_TOKEN")),
-        "visitor_data_set": bool(os.environ.get("VISITOR_DATA")),
         "files": os.listdir(os.getcwd()),
     })
 
