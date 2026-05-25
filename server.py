@@ -1,19 +1,6 @@
 import os
 import re
 import tempfile
-import subprocess
-import sys
-import json
-
-# Forçar versão correta do yt-dlp
-try:
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install",
-        "--force-reinstall", "yt-dlp==2024.12.13"
-    ])
-except:
-    pass
-
 import yt_dlp
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
@@ -22,15 +9,14 @@ app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
-COOKIES_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
 
-def ydl_opts():
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-    }
-    if os.path.exists(COOKIES_FILE):
-        opts["cookiefile"] = COOKIES_FILE
+# Caminho do cookies.txt (na mesma pasta do server.py)
+COOKIES = os.path.join(os.path.dirname(__file__), "cookies.txt")
+
+def ydl_base_opts():
+    opts = {"quiet": True}
+    if os.path.exists(COOKIES):
+        opts["cookiefile"] = COOKIES
     return opts
 
 def extract_video_id(url_or_id):
@@ -45,147 +31,125 @@ def extract_video_id(url_or_id):
         m = re.search(pat, url_or_id)
         if m:
             return m.group(1)
-    return None
+    raise ValueError("ID de video invalido")
+
+def safe_name(title):
+    return re.sub(r'[\\/*?:"<>|]', "-", title)[:60].strip()
+
+@app.route("/debug")
+def debug():
+    exists = os.path.exists(COOKIES)
+    size   = os.path.getsize(COOKIES) if exists else 0
+    return jsonify({
+        "cookies_path":   COOKIES,
+        "cookies_exists": exists,
+        "cookies_size":   size,
+        "cwd":            os.getcwd(),
+        "files":          os.listdir(os.getcwd()),
+    })
 
 @app.route("/")
 def health():
-    return jsonify({
-        "status": "ok",
-        "yt_dlp_version": yt_dlp.version.__version__
-    })
+    return jsonify({"status": "ok", "service": "VLTX Backend"})
 
 @app.route("/api/info")
 def info():
     video_id = request.args.get("v", "").strip()
     if not video_id:
         return jsonify({"error": "Parametro v obrigatorio"}), 400
-
     try:
         vid_id = extract_video_id(video_id)
-        if not vid_id:
-            return jsonify({"error": "ID de video invalido"}), 400
-
         url = f"https://www.youtube.com/watch?v={vid_id}"
-
-        with yt_dlp.YoutubeDL(ydl_opts()) as ydl:
+        opts = {**ydl_base_opts(), "skip_download": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-
-        # Verificar se info é válido
-        if not info:
-            return jsonify({"error": "Vídeo não encontrado"}), 404
-
-        # Extrair dados com segurança
-        title = info.get("title", "Sem título") or "Sem título"
-        uploader = info.get("uploader", "Desconhecido") or "Desconhecido"
-        duration = info.get("duration", 0) or 0
+        secs = info.get("duration", 0) or 0
+        duration = f"{secs // 60}:{secs % 60:02d}" if secs else ""
         views = info.get("view_count", 0) or 0
-
-        # Formatar
-        duration_str = f"{duration // 60}:{duration % 60:02d}" if duration else ""
-
-        if views >= 1000000:
-            views_str = f"{views/1000000:.1f}M visualizacoes"
-        elif views >= 1000:
-            views_str = f"{views/1000:.0f}K visualizacoes"
+        if views >= 1_000_000:
+            views_str = f"{views/1_000_000:.1f}M visualizacoes"
+        elif views >= 1_000:
+            views_str = f"{views/1_000:.0f}K visualizacoes"
         else:
             views_str = f"{views} visualizacoes"
-
         return jsonify({
-            "title": str(title),
-            "channel": str(uploader),
-            "views": views_str,
-            "duration": duration_str,
-            "thumbUrl": f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg",
+            "title":    info.get("title", ""),
+            "channel":  info.get("uploader", ""),
+            "views":    views_str,
+            "duration": duration,
+            "thumbUrl": info.get("thumbnail", f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"),
         })
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/download")
 def download():
     video_id = request.args.get("v", "").strip()
-    fmt = request.args.get("fmt", "mp3").strip().lower()
-    quality = request.args.get("q", "128").strip()
-
+    fmt      = request.args.get("fmt", "mp3").strip().lower()
+    quality  = request.args.get("q", "128").strip()
     if not video_id:
         return jsonify({"error": "Parametro v obrigatorio"}), 400
-
     try:
         vid_id = extract_video_id(video_id)
-        if not vid_id:
-            return jsonify({"error": "ID de video invalido"}), 400
-
-        url = f"https://www.youtube.com/watch?v={vid_id}"
-
-        opts = ydl_opts()
-        opts["outtmpl"] = os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s")
+        url    = f"https://www.youtube.com/watch?v={vid_id}"
 
         if fmt == "mp3":
-            opts["format"] = "bestaudio/best"
-            opts["postprocessors"] = [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": quality if quality in ("128", "192", "320") else "192",
-            }]
-        else:
-            quality_map = {
-                "360": "best[height<=360]",
-                "720": "best[height<=720]",
-                "1080": "best[height<=1080]",
+            audio_quality = quality if quality in ("128", "192", "320") else "192"
+            opts = {
+                **ydl_base_opts(),
+                "format": "bestaudio/best",
+                "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": audio_quality,
+                }],
             }
-            opts["format"] = f"{quality_map.get(quality, 'best')}/best"
-            opts["merge_output_format"] = "mp4"
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-
-        if not info:
-            return jsonify({"error": "Falha no download"}), 500
-
-        title = info.get("title", vid_id) or vid_id
-        safe_title = re.sub(r'[\\/*?:"<>|]', "-", str(title))[:60].strip()
-
-        ext = "mp3" if fmt == "mp3" else "mp4"
-        filename = safe_title + "." + ext
-        filepath = os.path.join(DOWNLOAD_DIR, filename)
-
-        # Procurar arquivo
-        if not os.path.exists(filepath):
-            files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(ext)]
-            if not files and ext == "mp4":
-                for alt in ["mkv", "webm"]:
-                    files = [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(alt)]
-                    if files:
-                        ext = alt
-                        break
-
-            if not files:
-                return jsonify({
-                    "error": "Arquivo não encontrado",
-                    "dir_contents": os.listdir(DOWNLOAD_DIR)
-                }), 500
-
-            files.sort(key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)), reverse=True)
-            filepath = os.path.join(DOWNLOAD_DIR, files[0])
-            filename = files[0]
-
-        mime_types = {
-            "mp3": "audio/mpeg",
-            "mp4": "video/mp4",
-            "mkv": "video/x-matroska",
-            "webm": "video/webm"
-        }
-
-        return send_file(
-            filepath,
-            as_attachment=True,
-            download_name=filename,
-            mimetype=mime_types.get(ext, "application/octet-stream")
-        )
-
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info  = ydl.extract_info(url, download=True)
+                title = safe_name(info.get("title", vid_id))
+            filepath = os.path.join(DOWNLOAD_DIR, title + ".mp3")
+            if not os.path.exists(filepath):
+                files = sorted(
+                    [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".mp3")],
+                    key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
+                    reverse=True,
+                )
+                if not files:
+                    return jsonify({"error": "Arquivo nao encontrado"}), 500
+                filepath = os.path.join(DOWNLOAD_DIR, files[0])
+            return send_file(filepath, as_attachment=True,
+                             download_name=title + ".mp3", mimetype="audio/mpeg")
+        else:
+            fmt_map = {
+                "360":  "18",
+                "720":  "22",
+                "1080": "bestvideo[ext=mp4]+bestaudio/best",
+            }
+            opts = {
+                **ydl_base_opts(),
+                "format": fmt_map.get(quality, "22"),
+                "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+                "merge_output_format": "mp4",
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info  = ydl.extract_info(url, download=True)
+                title = safe_name(info.get("title", vid_id))
+            filepath = os.path.join(DOWNLOAD_DIR, title + ".mp4")
+            if not os.path.exists(filepath):
+                files = sorted(
+                    [f for f in os.listdir(DOWNLOAD_DIR) if f.endswith(".mp4")],
+                    key=lambda f: os.path.getmtime(os.path.join(DOWNLOAD_DIR, f)),
+                    reverse=True,
+                )
+                if not files:
+                    return jsonify({"error": "Arquivo nao encontrado"}), 500
+                filepath = os.path.join(DOWNLOAD_DIR, files[0])
+            return send_file(filepath, as_attachment=True,
+                             download_name=title + ".mp4", mimetype="video/mp4")
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
