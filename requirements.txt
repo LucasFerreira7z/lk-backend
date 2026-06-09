@@ -1,4 +1,4 @@
 flask
 flask-cors
 gunicorn
-pytubefix
+pytubefix==7.2.2
