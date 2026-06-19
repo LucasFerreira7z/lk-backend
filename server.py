@@ -33,7 +33,7 @@ def safe_name(title):
 
 def make_yt(vid_id):
     url = f"https://www.youtube.com/watch?v={vid_id}"
-    return YouTube(url, use_oauth=False, allow_oauth_cache=False)
+    return YouTube(url, use_po_token=True)
 
 
 @app.route("/")
