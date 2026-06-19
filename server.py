@@ -2,9 +2,9 @@ import os
 import re
 import tempfile
 
+import yt_dlp
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
-from pytubefix import YouTube
 
 app = Flask(__name__)
 CORS(app)
@@ -31,12 +31,15 @@ def safe_name(title):
     return re.sub(r'[\\/*?:"<>|]', "-", title)[:60].strip()
 
 
-def make_yt(vid_id):
-    url = f"https://www.youtube.com/watch?v={vid_id}"
-    try:
-        return YouTube(url, use_po_token=True, use_oauth=False, allow_oauth_cache=False)
-    except Exception:
-        return YouTube(url, use_oauth=False, allow_oauth_cache=False)
+def make_url(vid_id):
+    return f"https://www.youtube.com/watch?v={vid_id}"
+
+
+BASE_OPTS = {
+    "quiet": True,
+    "no_warnings": True,
+    "extractor_retries": 3,
+}
 
 
 @app.route("/")
@@ -51,15 +54,11 @@ def info():
         return jsonify({"error": "Parametro v obrigatorio"}), 400
     try:
         vid_id = extract_video_id(video_id)
-        yt = make_yt(vid_id)
-        try:
-            secs = yt.length or 0
-        except Exception:
-            secs = 0
-        try:
-            views = yt.views or 0
-        except Exception:
-            views = 0
+        url = make_url(vid_id)
+        with yt_dlp.YoutubeDL({**BASE_OPTS, "skip_download": True}) as ydl:
+            meta = ydl.extract_info(url, download=False)
+        secs = meta.get("duration") or 0
+        views = meta.get("view_count") or 0
         if views >= 1_000_000:
             views_str = f"{views / 1_000_000:.1f}M visualizacoes"
         elif views >= 1_000:
@@ -68,11 +67,11 @@ def info():
             views_str = f"{views} visualizacoes"
         return jsonify(
             {
-                "title": yt.title,
-                "channel": yt.author,
+                "title": meta.get("title", ""),
+                "channel": meta.get("uploader", ""),
                 "views": views_str,
                 "duration": f"{secs // 60}:{secs % 60:02d}" if secs else "",
-                "thumbUrl": yt.thumbnail_url,
+                "thumbUrl": meta.get("thumbnail", ""),
             }
         )
     except Exception as e:
@@ -88,56 +87,52 @@ def download():
         return jsonify({"error": "Parametro v obrigatorio"}), 400
     try:
         vid_id = extract_video_id(video_id)
-        yt = make_yt(vid_id)
-        title = safe_name(yt.title)
+        url = make_url(vid_id)
+
+        with yt_dlp.YoutubeDL({**BASE_OPTS, "skip_download": True}) as ydl:
+            meta = ydl.extract_info(url, download=False)
+        title = safe_name(meta.get("title", vid_id))
 
         if fmt == "mp3":
-            stream = yt.streams.filter(only_audio=True).order_by("abr").last()
-            if not stream:
-                return jsonify({"error": "Nenhuma stream de audio encontrada"}), 404
-            filepath = stream.download(
-                output_path=DOWNLOAD_DIR, filename=title + ".mp4"
-            )
-            mp3_path = os.path.join(DOWNLOAD_DIR, title + ".mp3")
-            if os.path.exists(mp3_path):
-                os.remove(mp3_path)
-            os.rename(filepath, mp3_path)
+            out_path = os.path.join(DOWNLOAD_DIR, title + ".mp3")
+            if os.path.exists(out_path):
+                os.remove(out_path)
+            opts = {
+                **BASE_OPTS,
+                "format": "bestaudio/best",
+                "outtmpl": os.path.join(DOWNLOAD_DIR, title + ".%(ext)s"),
+                "postprocessors": [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": "mp3",
+                        "preferredquality": quality,
+                    }
+                ],
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
             return send_file(
-                mp3_path,
+                out_path,
                 as_attachment=True,
                 download_name=title + ".mp3",
                 mimetype="audio/mpeg",
             )
         else:
-            height_map = {"360": 360, "720": 720, "1080": 1080}
-            max_height = height_map.get(quality, 720)
-            stream = (
-                yt.streams.filter(progressive=True, file_extension="mp4")
-                .filter(
-                    lambda s: (
-                        s.resolution is not None
-                        and s.resolution.replace("p", "").isdigit()
-                        and int(s.resolution.replace("p", "")) <= max_height
-                    )
-                )
-                .order_by("resolution")
-                .last()
-            )
-            if not stream:
-                stream = (
-                    yt.streams.filter(progressive=True, file_extension="mp4")
-                    .order_by("resolution")
-                    .last()
-                )
-            if not stream:
-                stream = yt.streams.get_highest_resolution()
-            if not stream:
-                return jsonify({"error": "Nenhuma stream de video encontrada"}), 404
-            filepath = stream.download(
-                output_path=DOWNLOAD_DIR, filename=title + ".mp4"
-            )
+            height_map = {"360": "360", "720": "720", "1080": "1080"}
+            max_height = height_map.get(quality, "720")
+            out_path = os.path.join(DOWNLOAD_DIR, title + ".mp4")
+            if os.path.exists(out_path):
+                os.remove(out_path)
+            opts = {
+                **BASE_OPTS,
+                "format": f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]/best[ext=mp4]/best",
+                "outtmpl": os.path.join(DOWNLOAD_DIR, title + ".%(ext)s"),
+                "merge_output_format": "mp4",
+            }
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
             return send_file(
-                filepath,
+                out_path,
                 as_attachment=True,
                 download_name=title + ".mp4",
                 mimetype="video/mp4",

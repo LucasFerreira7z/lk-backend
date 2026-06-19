@@ -1,5 +1,4 @@
 flask
 flask-cors
 gunicorn
-pytubefix==7.2.2
-nodejs-wheel
+yt-dlp
