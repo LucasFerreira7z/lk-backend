@@ -149,7 +149,7 @@ def download():
             if os.path.exists(out_path):
                 os.remove(out_path)
             opts = build_opts({
-                "format": f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]/best[ext=mp4]/best",
+                "format": f"bestvideo[height<={max_height}]+bestaudio/bestvideo[height<={max_height}]/best[height<={max_height}]/bestvideo+bestaudio/best",
                 "outtmpl": os.path.join(DOWNLOAD_DIR, title + ".%(ext)s"),
                 "merge_output_format": "mp4",
             })
