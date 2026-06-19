@@ -49,8 +49,14 @@ def info():
     try:
         vid_id = extract_video_id(video_id)
         yt = make_yt(vid_id)
-        secs = yt.length or 0
-        views = yt.views or 0
+        try:
+            secs = yt.length or 0
+        except Exception:
+            secs = 0
+        try:
+            views = yt.views or 0
+        except Exception:
+            views = 0
         if views >= 1_000_000:
             views_str = f"{views / 1_000_000:.1f}M visualizacoes"
         elif views >= 1_000:
