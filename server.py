@@ -49,7 +49,7 @@ def build_opts(extra=None):
         "extractor_retries": 3,
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"],
+                "player_client": ["web"],
             }
         },
     }
