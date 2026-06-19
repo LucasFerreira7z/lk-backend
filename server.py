@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import tempfile
@@ -10,6 +11,12 @@ app = Flask(__name__)
 CORS(app)
 
 DOWNLOAD_DIR = tempfile.mkdtemp()
+COOKIES_FILE = os.path.join(DOWNLOAD_DIR, "cookies.txt")
+
+_cookies_b64 = os.environ.get("YT_COOKIES_B64", "")
+if _cookies_b64:
+    with open(COOKIES_FILE, "wb") as f:
+        f.write(base64.b64decode(_cookies_b64))
 
 
 def extract_video_id(url_or_id):
@@ -39,6 +46,7 @@ BASE_OPTS = {
     "quiet": True,
     "no_warnings": True,
     "extractor_retries": 3,
+    **({"cookiefile": COOKIES_FILE} if os.path.exists(COOKIES_FILE) else {}),
 }
 
 
