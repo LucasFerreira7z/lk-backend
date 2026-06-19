@@ -49,7 +49,7 @@ def build_opts(extra=None):
         "extractor_retries": 3,
         "extractor_args": {
             "youtube": {
-                "player_client": ["web"],
+                "player_client": ["android", "web"],
             }
         },
     }
@@ -149,7 +149,7 @@ def download():
             if os.path.exists(out_path):
                 os.remove(out_path)
             opts = build_opts({
-                "format": f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best",
+                "format": f"best[height<={max_height}]/best",
                 "outtmpl": os.path.join(DOWNLOAD_DIR, title + ".%(ext)s"),
                 "merge_output_format": "mp4",
             })
