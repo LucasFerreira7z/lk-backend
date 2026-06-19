@@ -5,7 +5,6 @@ import tempfile
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from pytubefix import YouTube
-from pytubefix.cli import on_progress
 
 app = Flask(__name__)
 CORS(app)
@@ -34,9 +33,7 @@ def safe_name(title):
 
 def make_yt(vid_id):
     url = f"https://www.youtube.com/watch?v={vid_id}"
-    return YouTube(
-        url, on_progress_callback=on_progress, use_oauth=False, allow_oauth_cache=False
-    )
+    return YouTube(url, use_oauth=False, allow_oauth_cache=False)
 
 
 @app.route("/")
