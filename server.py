@@ -42,17 +42,35 @@ def make_url(vid_id):
     return f"https://www.youtube.com/watch?v={vid_id}"
 
 
-BASE_OPTS = {
-    "quiet": True,
-    "no_warnings": True,
-    "extractor_retries": 3,
-    **({"cookiefile": COOKIES_FILE} if os.path.exists(COOKIES_FILE) else {}),
-}
+def build_opts(extra=None):
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_retries": 3,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            }
+        },
+    }
+    if os.path.exists(COOKIES_FILE):
+        opts["cookiefile"] = COOKIES_FILE
+    if extra:
+        opts.update(extra)
+    return opts
 
 
 @app.route("/")
 def health():
     return jsonify({"status": "ok", "service": "VLTX Backend"})
+
+
+@app.route("/api/status")
+def status():
+    return jsonify({
+        "cookies_loaded": os.path.exists(COOKIES_FILE),
+        "cookies_env_set": bool(os.environ.get("YT_COOKIES_B64", "")),
+    })
 
 
 @app.route("/api/info")
@@ -63,7 +81,7 @@ def info():
     try:
         vid_id = extract_video_id(video_id)
         url = make_url(vid_id)
-        with yt_dlp.YoutubeDL({**BASE_OPTS, "skip_download": True}) as ydl:
+        with yt_dlp.YoutubeDL(build_opts({"skip_download": True})) as ydl:
             meta = ydl.extract_info(url, download=False)
         secs = meta.get("duration") or 0
         views = meta.get("view_count") or 0
@@ -97,7 +115,7 @@ def download():
         vid_id = extract_video_id(video_id)
         url = make_url(vid_id)
 
-        with yt_dlp.YoutubeDL({**BASE_OPTS, "skip_download": True}) as ydl:
+        with yt_dlp.YoutubeDL(build_opts({"skip_download": True})) as ydl:
             meta = ydl.extract_info(url, download=False)
         title = safe_name(meta.get("title", vid_id))
 
@@ -105,8 +123,7 @@ def download():
             out_path = os.path.join(DOWNLOAD_DIR, title + ".mp3")
             if os.path.exists(out_path):
                 os.remove(out_path)
-            opts = {
-                **BASE_OPTS,
+            opts = build_opts({
                 "format": "bestaudio/best",
                 "outtmpl": os.path.join(DOWNLOAD_DIR, title + ".%(ext)s"),
                 "postprocessors": [
@@ -116,7 +133,7 @@ def download():
                         "preferredquality": quality,
                     }
                 ],
-            }
+            })
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
             return send_file(
@@ -131,12 +148,11 @@ def download():
             out_path = os.path.join(DOWNLOAD_DIR, title + ".mp4")
             if os.path.exists(out_path):
                 os.remove(out_path)
-            opts = {
-                **BASE_OPTS,
+            opts = build_opts({
                 "format": f"bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={max_height}][ext=mp4]/best[ext=mp4]/best",
                 "outtmpl": os.path.join(DOWNLOAD_DIR, title + ".%(ext)s"),
                 "merge_output_format": "mp4",
-            }
+            })
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
             return send_file(
